@@ -1,6 +1,28 @@
 # AntigravityBridge
 
-A [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that lets you control Resonite programmatically through a local HTTP API. Build scenes, create UI, manage components, and manipulate the world — all from external tools, scripts, or AI agents.
+A [ResoniteModLoader](https://github.com/resonite-modding-group/ResoniteModLoader) mod that exposes a localhost HTTP API for building things in [Resonite](https://resonite.com) programmatically. Designed to be used by **AI agents** (like Antigravity) and **developer scripts** — not as a standalone GUI tool.
+
+## How It Works
+
+AntigravityBridge is the **connection layer** between an external tool and Resonite's engine:
+
+```
+You (natural language) → AI Agent (Antigravity) → HTTP API → AntigravityBridge mod → Resonite
+     "build me a                translates to              executes on          objects appear
+      wiki panel"               JSON commands              engine thread         in-world
+```
+
+### For AI Agents
+The primary use case. You chat with an AI agent that has access to your local machine. The agent sends HTTP requests to `localhost:9090` to create slots, attach components, build UI, and manipulate the scene — all while you describe what you want in plain English.
+
+The agent can:
+- **Build entire UI panels** from a single `buildUIXTree` command
+- **Create 3D objects** with meshes, materials, and transforms via `createPrimitive`
+- **Read and modify** existing world content using `trackExistingSlot` and field getters/setters
+- **Iterate on designs** by inspecting what was built (`getSlotInfo`, `getComponentFields`) and adjusting
+
+### For Developers
+You can also script against the API directly using any HTTP client — PowerShell, Python, curl, Node.js, etc. The `/help` endpoint returns the full API schema as JSON, and the `/batch` endpoint lets you execute hundreds of commands in a single engine frame.
 
 ## Requirements
 
@@ -62,7 +84,7 @@ If you don't have RML yet:
    {"status": "ok", "message": "pong", "trackedSlots": 0}
    ```
 
-If you see that response, **AntigravityBridge is connected and ready**.
+If you see that response, **AntigravityBridge is connected and ready** for your AI agent or scripts.
 
 ## Sending Commands
 
