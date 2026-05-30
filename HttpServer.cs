@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Net;
+using System.Net.WebSockets;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -11,7 +14,7 @@ using ResoniteModLoader;
 namespace AntigravityBridge;
 
 /// <summary>
-/// Lightweight HTTP server using System.Net.HttpListener.
+/// Lightweight HTTP + WebSocket server using System.Net.HttpListener.
 /// Listens on localhost only for security.
 /// Routes requests to CommandRouter.
 /// </summary>
@@ -24,6 +27,12 @@ internal class BridgeHttpServer
     private Thread _listenerThread;
 
     private const int MaxBodySize = 10 * 1024 * 1024; // 10 MB
+    private const int WsBufferSize = 64 * 1024; // 64 KB WebSocket buffer
+
+    // Active WebSocket connections for event broadcasting
+    private readonly ConcurrentDictionary<string, WebSocket> _wsClients = new();
+
+    public int WebSocketClientCount => _wsClients.Count;
 
     public BridgeHttpServer(int port, CommandRouter router)
     {
@@ -50,11 +59,57 @@ internal class BridgeHttpServer
     public void Stop()
     {
         _cts?.Cancel();
+
+        // Close all WebSocket connections
+        foreach (var kvp in _wsClients)
+        {
+            try
+            {
+                kvp.Value.CloseAsync(WebSocketCloseStatus.NormalClosure, "Server shutting down", CancellationToken.None)
+                    .Wait(TimeSpan.FromSeconds(2));
+            }
+            catch { /* best effort */ }
+        }
+        _wsClients.Clear();
+
         try { _listener?.Stop(); } catch { /* already stopped */ }
         try { _listener?.Close(); } catch { /* already closed */ }
         _cts?.Dispose();
         _cts = null;
         _listener = null;
+    }
+
+    /// <summary>Broadcast a JSON message to all connected WebSocket clients.</summary>
+    public async Task BroadcastAsync(JObject message)
+    {
+        var json = message.ToString(Formatting.None);
+        var buffer = Encoding.UTF8.GetBytes(json);
+        var segment = new ArraySegment<byte>(buffer);
+
+        var deadClients = new List<string>();
+
+        foreach (var kvp in _wsClients)
+        {
+            try
+            {
+                if (kvp.Value.State == WebSocketState.Open)
+                {
+                    await kvp.Value.SendAsync(segment, WebSocketMessageType.Text, true, _cts?.Token ?? CancellationToken.None);
+                }
+                else
+                {
+                    deadClients.Add(kvp.Key);
+                }
+            }
+            catch
+            {
+                deadClients.Add(kvp.Key);
+            }
+        }
+
+        // Clean up dead connections
+        foreach (var id in deadClients)
+            _wsClients.TryRemove(id, out _);
     }
 
     private void ListenLoop()
@@ -100,6 +155,13 @@ internal class BridgeHttpServer
 
             string path = request.Url.AbsolutePath.TrimEnd('/').ToLowerInvariant();
 
+            // Handle WebSocket upgrade
+            if (path == "/ws" && request.IsWebSocketRequest)
+            {
+                HandleWebSocketUpgrade(context);
+                return;
+            }
+
             switch (path)
             {
                 case "/ping":
@@ -122,11 +184,24 @@ internal class BridgeHttpServer
                     SendResponse(response, 200, _router.GetCommandHelp());
                     break;
 
+                case "/status":
+                    SendResponse(response, 200, _router.GetStatus());
+                    break;
+
+                case "/ws":
+                    // WebSocket request but not an upgrade
+                    SendResponse(response, 400, new JObject
+                    {
+                        ["status"] = "error",
+                        ["error"] = "WebSocket upgrade required. Connect using a WebSocket client."
+                    });
+                    break;
+
                 default:
                     SendResponse(response, 404, new JObject
                     {
                         ["status"] = "error",
-                        ["error"] = $"Unknown endpoint: {path}. Use /ping, /cmd, /batch, /tracker, or /help"
+                        ["error"] = $"Unknown endpoint: {path}. Use /ping, /cmd, /batch, /tracker, /help, /status, or /ws"
                     });
                     break;
             }
@@ -146,6 +221,183 @@ internal class BridgeHttpServer
         }
     }
 
+    // ─── WebSocket ──────────────────────────────────────────────
+
+    private async void HandleWebSocketUpgrade(HttpListenerContext context)
+    {
+        WebSocketContext wsContext;
+        try
+        {
+            wsContext = await context.AcceptWebSocketAsync(subProtocol: null);
+        }
+        catch (Exception ex)
+        {
+            ResoniteMod.Error($"WebSocket upgrade failed: {ex.Message}");
+            context.Response.StatusCode = 500;
+            context.Response.Close();
+            return;
+        }
+
+        var ws = wsContext.WebSocket;
+        var clientId = Guid.NewGuid().ToString("N")[..8];
+        _wsClients[clientId] = ws;
+
+        ResoniteMod.Msg($"[WS] Client {clientId} connected ({_wsClients.Count} total)");
+
+        // Send welcome message
+        await WsSendAsync(ws, new JObject
+        {
+            ["type"] = "connected",
+            ["clientId"] = clientId,
+            ["mod"] = "AntigravityBridge",
+            ["version"] = AntigravityBridge.Instance.Version,
+            ["trackedSlots"] = _router.TrackedSlotCount
+        });
+
+        var buffer = new byte[WsBufferSize];
+
+        try
+        {
+            while (ws.State == WebSocketState.Open && !(_cts?.IsCancellationRequested ?? true))
+            {
+                var result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts?.Token ?? CancellationToken.None);
+
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "Goodbye", CancellationToken.None);
+                    break;
+                }
+
+                if (result.MessageType == WebSocketMessageType.Text)
+                {
+                    // Handle message fragments for large messages
+                    string message;
+                    if (result.EndOfMessage)
+                    {
+                        message = Encoding.UTF8.GetString(buffer, 0, result.Count);
+                    }
+                    else
+                    {
+                        // Accumulate fragments
+                        var ms = new MemoryStream();
+                        ms.Write(buffer, 0, result.Count);
+                        while (!result.EndOfMessage)
+                        {
+                            result = await ws.ReceiveAsync(new ArraySegment<byte>(buffer), _cts?.Token ?? CancellationToken.None);
+                            ms.Write(buffer, 0, result.Count);
+
+                            if (ms.Length > MaxBodySize)
+                            {
+                                await WsSendAsync(ws, new JObject
+                                {
+                                    ["status"] = "error",
+                                    ["error"] = $"Message too large. Max: {MaxBodySize / 1024 / 1024} MB"
+                                });
+                                ms.Dispose();
+                                continue;
+                            }
+                        }
+                        message = Encoding.UTF8.GetString(ms.ToArray());
+                        ms.Dispose();
+                    }
+
+                    if (AntigravityBridge.IsVerbose)
+                        ResoniteMod.Msg($"[WS {clientId}] {message[..Math.Min(200, message.Length)]}");
+
+                    await HandleWsMessage(ws, clientId, message);
+                }
+            }
+        }
+        catch (WebSocketException)
+        {
+            // Client disconnected
+        }
+        catch (OperationCanceledException)
+        {
+            // Server shutting down
+        }
+        catch (Exception ex)
+        {
+            ResoniteMod.Error($"[WS {clientId}] Error: {ex.Message}");
+        }
+        finally
+        {
+            _wsClients.TryRemove(clientId, out _);
+            ResoniteMod.Msg($"[WS] Client {clientId} disconnected ({_wsClients.Count} total)");
+
+            if (ws.State != WebSocketState.Closed && ws.State != WebSocketState.Aborted)
+            {
+                try { ws.Abort(); } catch { }
+            }
+            ws.Dispose();
+        }
+    }
+
+    private async Task HandleWsMessage(WebSocket ws, string clientId, string message)
+    {
+        JObject json;
+        try
+        {
+            json = JObject.Parse(message);
+        }
+        catch (JsonException ex)
+        {
+            await WsSendAsync(ws, new JObject
+            {
+                ["status"] = "error",
+                ["error"] = $"Invalid JSON: {ex.Message}"
+            });
+            return;
+        }
+
+        // Check if it's a batch
+        if (json["commands"] is JArray commands)
+        {
+            var options = json["options"] as JObject;
+            bool stopOnError = options?["stopOnError"]?.Value<bool>() ?? false;
+            var result = _router.ExecuteBatch(commands, stopOnError);
+            result["type"] = "batchResult";
+            await WsSendAsync(ws, result);
+        }
+        else if (json["action"] != null)
+        {
+            // Single command
+            var result = _router.ExecuteCommand(json);
+            result["type"] = "cmdResult";
+            await WsSendAsync(ws, result);
+        }
+        else
+        {
+            await WsSendAsync(ws, new JObject
+            {
+                ["status"] = "error",
+                ["error"] = "Expected 'action' for single command or 'commands' array for batch"
+            });
+        }
+    }
+
+    private async Task WsSendAsync(WebSocket ws, JObject message)
+    {
+        if (ws.State != WebSocketState.Open) return;
+
+        var json = message.ToString(Formatting.None);
+        var buffer = Encoding.UTF8.GetBytes(json);
+        try
+        {
+            await ws.SendAsync(new ArraySegment<byte>(buffer), WebSocketMessageType.Text, true,
+                _cts?.Token ?? CancellationToken.None);
+
+            if (AntigravityBridge.IsVerbose)
+                ResoniteMod.Msg($"[WS RSP] {json[..Math.Min(200, json.Length)]}");
+        }
+        catch (Exception ex)
+        {
+            ResoniteMod.Warn($"[WS] Send failed: {ex.Message}");
+        }
+    }
+
+    // ─── HTTP Handlers ──────────────────────────────────────────
+
     private void HandlePing(HttpListenerResponse response)
     {
         SendResponse(response, 200, new JObject
@@ -153,7 +405,8 @@ internal class BridgeHttpServer
             ["status"] = "ok",
             ["mod"] = "AntigravityBridge",
             ["version"] = AntigravityBridge.Instance.Version,
-            ["trackedSlots"] = _router.TrackedSlotCount
+            ["trackedSlots"] = _router.TrackedSlotCount,
+            ["wsClients"] = _wsClients.Count
         });
     }
 

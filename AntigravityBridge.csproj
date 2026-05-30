@@ -75,6 +75,12 @@
       <Private>false</Private>
     </Reference>
 
+    <!-- Audio engine -->
+    <Reference Include="Awwdio">
+      <HintPath>$(ResonitePath)\Awwdio.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+
     <!-- JSON (use Resonite's bundled Newtonsoft) -->
     <Reference Include="Newtonsoft.Json">
       <HintPath>$(ResonitePath)\Newtonsoft.Json.dll</HintPath>

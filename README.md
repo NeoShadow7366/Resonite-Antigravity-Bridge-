@@ -65,7 +65,7 @@ If you don't have RML yet:
 3. Check the Resonite log — you should see:
    ```
    AntigravityBridge v1.0.0 listening on http://localhost:9090/
-   Endpoints: /cmd, /batch, /ping, /tracker, /help
+   Endpoints: /cmd, /batch, /ping, /tracker, /help, /status, /ws
    ```
 4. **Test the connection** from any terminal:
 
@@ -182,25 +182,53 @@ The `buildUIXTree` command creates an entire UI hierarchy from a JSON tree:
 | `/batch` | POST | Execute multiple commands in one engine frame |
 | `/tracker` | GET | List all tracked slot name→RefID mappings |
 | `/help` | GET | Full self-documenting API schema (JSON) |
+| `/status` | GET | Server status — uptime, total commands processed, error count |
+| `/ws` | WebSocket | Bidirectional streaming — send commands and receive responses over a persistent connection |
 
-### Commands (35 total)
+### Commands (79 total)
 
 | Category | Commands |
 |---|---|
 | **Scene Graph** | `createSlot`, `destroySlot`, `destroyChildren`, `reparentSlot`, `findSlot`, `duplicateSlot`, `listChildren`, `trackExistingSlot`, `getSlotsByTag` |
-| **Slot Properties** | `setSlotActive`, `setSlotTransform`, `getSlotTransform`, `setSlotName`, `setSlotTag`, `setSlotOrderIndex`, `getSlotInfo` |
-| **Components** | `attachComponent`, `removeComponent` |
+| **Slot Properties** | `setSlotActive`, `setSlotTransform`, `getSlotTransform`, `setSlotName`, `setSlotTag`, `setSlotOrderIndex`, `getSlotInfo`, `setSlotPersist` |
+| **Components** | `attachComponent`, `removeComponent`, `findComponents`, `getRegisteredComponents` |
 | **Fields** | `setField`, `setFields`, `getComponentField`, `getComponentFields` |
 | **Dynamic Variables** | `createDynVarSpace`, `createDynVar`, `readDynVar`, `writeDynVar` |
 | **Assets** | `importTexture`, `importMesh` |
 | **High-Level** | `createPrimitive`, `buildUIXTree` |
+| **Physics** | `makePhysicsObject` |
+| **Audio Import** | `importAudio` |
+| **Video Import** | `importVideo` |
+| **Environment** | `setupEnvironment`, `createLight` |
+| **Particles** | `createParticleSystem` |
+| **Animation** | `createAnimation` |
+| **ProtoFlux** | `createProtoFluxNode`, `connectProtoFlux`, `setProtoFluxInput`, `getProtoFluxNode` |
+| **World & Session** | `getWorldInfo`, `getUserInfo`, `getUsers` |
+| **Templates** | `snapshotSlot`, `saveTemplate`, `stampTemplate`, `listTemplates`, `deleteTemplate` |
+| **Events** | `subscribe`, `unsubscribe`, `listSubscriptions` |
+| **Reference Wiring** | `wireReference`, `addToList`, `getComponentByRefId`, `getAllComponents` |
+| **Component Utils** | `copyComponent`, `removeFromList` |
+| **Hierarchy Navigation** | `findSlotByPath`, `findSlots`, `getParent`, `getSlotHierarchy` |
+| **Materials** | `createMaterial` |
+| **3D Text** | `create3DText` |
+| **Measurement** | `measureDistance` |
+| **Bulk Operations** | `setFieldOnChildren`, `duplicateSlotArray` |
+| **User Control** | `moveUser` |
 | **Utility** | `ping`, `log`, `clearTracker` |
+
+### Component Index Disambiguation
+
+Commands that target a component on a slot support an optional `componentIndex` parameter (0-based, default `0`). This lets you target the 2nd, 3rd, etc. component of the same type when a slot has multiple instances. Affects: `setField`, `setFields`, `getComponentField`, `getComponentFields`, `removeComponent`.
+
+### Slot Lookup by RefID
+
+Any command that accepts a slot name can also accept a RefID string (hex format from `ReferenceID.ToString()`). If the name isn't found in the tracker, the bridge tries to resolve it as a RefID directly from the world.
 
 ### Supported Field Types (18)
 
 `string`, `bool`, `int`, `long`, `float`, `double`, `float2`, `float3`, `float4`, `floatQ`, `colorX`, `Uri`, `enum` (auto-detected), `SyncRef` (auto-detected)
 
-### Registered Component Types (43)
+### Registered Component Types (73)
 
 <details>
 <summary>Click to expand full list</summary>
@@ -209,29 +237,175 @@ The `buildUIXTree` command creates an entire UI hierarchy from a JSON tree:
 
 **UIX Layout:** RectTransform, VerticalLayout, HorizontalLayout, GridLayout, LayoutElement, ContentSizeFitter, ScrollRect, IgnoreLayout
 
+**UIX Controls:** Slider, ProgressBar
+
 **Textures & Sprites:** StaticTexture2D, SpriteProvider
 
-**Materials:** UnlitMaterial, PBS_Metallic, PBS_Specular
+**Materials:** UnlitMaterial, PBS_Metallic, PBS_Specular, FresnelMaterial, XiexeToonMaterial, PBS_DualSidedMetallic
 
-**Meshes & Rendering:** BoxMesh, QuadMesh, SphereMesh, CylinderMesh, ConeMesh, StaticMesh, MeshRenderer, SkinnedMeshRenderer, TextRenderer
+**Meshes & Rendering:** BoxMesh, QuadMesh, SphereMesh, CylinderMesh, ConeMesh, StaticMesh, MeshRenderer, SkinnedMeshRenderer, TextRenderer, TorusMesh, BevelBoxMesh, BevelPlaneMesh, BevelStripeMesh, TriangleMesh, CapsuleMesh, CircleMesh, CurvedPlaneMesh, IcoSphereMesh, GridMesh, TubeMesh, RingMesh
 
-**Lighting:** Light
+**Lighting:** Light, ReflectionProbe, Skybox, AmbientLightSH2
 
 **Colliders:** BoxCollider, SphereCollider, CapsuleCollider, MeshCollider
 
-**Audio:** AudioClipPlayer, AudioOutput
+**Physics:** CharacterController
 
-**Interaction:** Grabbable
+**Audio:** AudioClipPlayer, AudioOutput, StaticAudioClip, AudioListener
 
-**Animation:** Spinner, Wiggler, Panner1D, Panner2D
+**Video:** VideoTextureProvider
+
+**Interaction:** Grabbable, PhysicalButton, TouchButton, ContextMenuItemSource, InteractionHandler
+
+**Animation / Motion:** Spinner, Wiggler, Panner1D, Panner2D, LinearMapper1D, LinearMapper2D, LinearMapper3D, LinearMapper4D
+
+**Particles (PhotonDust):** ParticleSystem, ParticleStyle, PointEmitter, ConeEmitter, BoxEmitter, SphereEmitter
 
 **Dynamic Variables:** DynamicVariableSpace
 
 **Utility:** SmoothTransform, Comment
 
 > Components not in this list can still be attached using their full FrooxEngine type name.
+> Generic components like `ValueGradientDriver<float>`, `Tween<colorX>`, `ValueCopy<float3>` are also supported — pass the generic syntax directly as the type name.
 
 </details>
+
+### Physics & Audio
+
+Two high-level commands handle common multi-component setups in a single call:
+
+- **`makePhysicsObject`** — Attaches a collider (box, sphere, capsule, or mesh), a `CharacterController`, and optionally a `Grabbable` to an existing slot. One call replaces three separate `attachComponent` commands.
+- **`importAudio`** — Creates a complete audio pipeline from a URL: `StaticAudioClip` → `AudioClipPlayer` → `AudioOutput`, with configurable spatial blend. Returns RefIDs for all three components.
+
+### ProtoFlux
+
+ProtoFlux is Resonite's visual programming system. The bridge exposes four commands for creating and wiring ProtoFlux nodes programmatically:
+
+- **`createProtoFluxNode`** — Instantiate any ProtoFlux node type on a slot
+- **`connectProtoFlux`** — Wire an output of one node to an input of another
+- **`setProtoFluxInput`** — Set a constant/literal value on a node input
+- **`getProtoFluxNode`** — Inspect a node's current inputs, outputs, and impulses
+
+This enables AI agents and scripts to build logic graphs — conditionals, math, event handlers, and more — entirely through the API.
+
+### Templates & Snapshots
+
+The bridge can serialize slot hierarchies to JSON — capturing names, transforms, components, and field values — and save them as named templates for reuse. This enables:
+
+- **Snapshots** — capture the state of a slot tree at a point in time (`snapshotSlot`)
+- **Save as template** — store a snapshot under a name for later use (`saveTemplate`)
+- **Stamp copies** — instantiate a template under any parent slot (`stampTemplate`)
+- **Undo patterns** — snapshot before making changes, then refer back to the snapshot to see what was there if you need to restore it
+
+Commands: `snapshotSlot`, `saveTemplate`, `stampTemplate`, `listTemplates`, `deleteTemplate`.
+
+### Event Subscriptions
+
+The bridge supports a real-time event system for monitoring changes in the Resonite world. Subscribe to events via `/cmd` or `/ws`, and receive event notifications as JSON messages on the WebSocket connection at `/ws`.
+
+**Event types:**
+- `fieldChanged` — fires when a tracked field value changes
+- `slotChildrenChanged` — fires when children are added/removed from a slot
+- `slotDestroyed` — fires when a tracked slot is destroyed
+- `userJoin` — fires when a user joins the session
+- `userLeave` — fires when a user leaves the session
+
+Commands: `subscribe` (create a subscription), `unsubscribe` (remove by ID or all), `listSubscriptions` (list active subscriptions). Requires a WebSocket connection at `/ws` to receive event messages.
+
+### Hierarchy Navigation
+
+The bridge provides commands for navigating and inspecting the slot hierarchy:
+
+- **`findSlotByPath`** — Navigate to a slot using a slash-delimited path (e.g., `"Root/Panel/Header"`). Supports `..` (parent) and `.` (current), case-insensitive matching, and substring fallback.
+- **`findSlots`** — Multi-result search by name, tag, or regex pattern. Returns up to 50 results with optional `trackAll`.
+- **`getParent`** — Returns the parent slot of a given slot and tracks it for further commands.
+- **`getSlotHierarchy`** — Returns a nested tree view of a slot's children with component info, child counts, and truncation markers for deep hierarchies.
+
+These complement the existing `findSlot` and `listChildren` commands with richer navigation and search capabilities.
+
+### Reference Wiring
+
+The bridge supports wiring any `ISyncRef` field to any world element by RefID, and inspecting components anywhere in the world — not just ones created through the bridge.
+
+- **`wireReference`** — Wire any `ISyncRef` field to a target element by RefID. Supports dotted field paths for nested access (e.g., `Materials._elements.0`).
+- **`addToList`** — Append items to `SyncList` fields (e.g., adding a material to `MeshRenderer.Materials`).
+- **`getComponentByRefId`** — Look up any component or slot by RefID anywhere in the world. Returns its type, fields, and current values.
+- **`getAllComponents`** — List ALL components on a slot with their types, RefIDs, and field names — not limited to registered shortcuts.
+
+These commands enable precise low-level wiring (e.g., pointing a material's texture reference at a specific `StaticTexture2D` by RefID) and full component inspection of any slot in the world.
+
+### Environment & Lighting
+
+Two high-level commands for setting up world environments and placing lights:
+
+- **`setupEnvironment`** — One-call skybox, ambient light, and reflection probe setup. Pass a skybox texture URL and ambient light color to configure the entire environment in a single command.
+- **`createLight`** — Creates a fully configured light source (point, directional, or spot) with color, intensity, shadow settings, and position. One call replaces multiple `createSlot` + `attachComponent` + `setField` commands.
+
+### Particles
+
+High-level particle system creation in a single call:
+
+- **`createParticleSystem`** — Creates a complete PhotonDust particle system with emitter, style, and renderer. Supports `point`, `cone`, `box`, and `sphere` emitter types with configurable color, size, emission rate, lifetime, and speed. One call replaces what would be 5+ manual component attachments.
+
+### Animation
+
+Drive animated property changes with gradient keyframes:
+
+- **`createAnimation`** — Creates a `ValueGradientDriver` with JSON-defined keyframes and wires it to a target field. Supports animating float, color, and other value types over time. The driver and keyframes are configured in a single call.
+
+### Video & Media
+
+High-level video import and display:
+
+- **`importVideo`** — Creates a complete video playback setup: `VideoTextureProvider` + display quad + material, all auto-wired. Similar to `importAudio` but for video content. Returns RefIDs for the video provider, renderer, and material.
+
+### Component Utilities
+
+Commands for duplicating and managing components:
+
+- **`copyComponent`** — Duplicates a component from one slot to another. Copies all field values from the source component to a new instance on the target slot.
+- **`removeFromList`** — Removes an item from a `SyncList` field by index. The inverse of `addToList` — useful for cleaning up material lists, removing entries from collections, etc.
+
+### Materials
+
+High-level material creation and configuration:
+
+- **`createMaterial`** — Creates a PBR material on a slot with color, metallic, and smoothness settings. Automatically wires the material to a `MeshRenderer` on a specified renderer slot if provided. One call replaces multiple `attachComponent` + `setField` + `wireReference` commands.
+
+### 3D Text
+
+High-level 3D text creation:
+
+- **`create3DText`** — Creates a complete 3D text object with `TextRenderer` and `UnlitMaterial`, all wired together. Supports font size, color, alignment, and positioning. One call replaces the full text rendering pipeline setup.
+
+### Measurement
+
+Spatial measurement utilities:
+
+- **`measureDistance`** — Measures the world-space distance between two tracked slots. Returns the distance, both positions, and the delta vector between them.
+
+### Bulk Operations
+
+Commands for operating on multiple slots or components at once:
+
+- **`setFieldOnChildren`** — Sets a field value on all matching components across a slot's descendant hierarchy. Useful for bulk-updating colors, visibility, or any shared property. Supports optional depth limiting.
+- **`duplicateSlotArray`** — Creates N copies of a slot with uniform spacing between them. All copies are automatically tracked with a numbered prefix. Useful for building grids, rows, or arrays of repeated objects.
+
+### User Control
+
+Commands for controlling the local user:
+
+- **`moveUser`** — Teleports the local user to specific world coordinates or to the position of a tracked slot. Accepts position and rotation, or a target slot reference.
+
+### Persistence
+
+Control whether slots survive across sessions:
+
+- **`setSlotPersist`** — Sets or clears the `Persistent` flag on a slot, controlling whether it persists when the world is saved and reloaded.
+
+### WebSocket
+
+The `/ws` endpoint provides a persistent WebSocket connection for bidirectional streaming. Connect to `ws://localhost:9090/ws` and send JSON commands in the same format as `/cmd`. Responses are pushed back over the same connection as they complete. This is useful for long-running sessions, real-time feedback, and receiving event subscription notifications.
 
 ## Configuration
 

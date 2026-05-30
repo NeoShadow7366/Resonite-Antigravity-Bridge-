@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using Elements.Core;
 using FrooxEngine;
 using Newtonsoft.Json.Linq;
 using ResoniteModLoader;
@@ -23,15 +24,19 @@ internal class SlotTracker
             ResoniteMod.Msg($"[Tracker] Registered: {name} → {slot.ReferenceID}");
     }
 
-    /// <summary>Get a slot by name. Returns null if not found.</summary>
+    /// <summary>Get a slot by name, RefID, or special alias. Returns null if not found.</summary>
     public Slot Get(string name)
     {
+        if (string.IsNullOrEmpty(name))
+            return null;
+
         if (name == "__root__" || name == "__worldroot__")
             return GetWorldRoot();
 
         if (name == "__localuser__")
             return GetLocalUserRoot();
 
+        // Check tracker first
         if (_slots.TryGetValue(name, out var slot))
         {
             // Verify slot is still alive
@@ -40,7 +45,28 @@ internal class SlotTracker
 
             // Dead slot — remove from tracker
             _slots.TryRemove(name, out _);
-            return null;
+        }
+
+        // Try resolving as a RefID (hex format like "IDA1B2C3")
+        var resolved = TryResolveByRefID(name);
+        if (resolved != null)
+            return resolved;
+
+        return null;
+    }
+
+    /// <summary>Try to resolve a slot by RefID string (hex format from ReferenceID.ToString()).</summary>
+    private Slot TryResolveByRefID(string refIdStr)
+    {
+        var world = Engine.Current?.WorldManager?.FocusedWorld;
+        if (world == null) return null;
+
+        // Try parsing as RefID
+        if (RefID.TryParse(refIdStr, out var refId))
+        {
+            var element = world.ReferenceController.GetObjectOrNull(refId);
+            if (element is Slot s && !s.IsDestroyed)
+                return s;
         }
 
         return null;
